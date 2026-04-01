@@ -109,7 +109,7 @@ class TinyLlavaForConditionalGeneration(TinyLlavaPreTrainedModel): #继承自刚
         # —— 本质是为了适配硬件（GPU/TPU）的并行计算优化，提升模型训练 / 推理速度
         self.config.text_config.vocab_size = model_embeds.num_embeddings
         self.config.vocab_size = model_embeds.num_embeddings
-        self.vocab_size = model_embeds.num_embeddings
+        self.vocab_size = model_embeds.num_embeddings 
         return model_embeds # 把新的词表大小同步记录下来。
     # 调整词表大小，并同步更新相关配置
 
@@ -219,12 +219,13 @@ class TinyLlavaForConditionalGeneration(TinyLlavaPreTrainedModel): #继承自刚
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs): # 只管准备 “原始输入” 不是强制为 None，而是：有就传，没有就默认 None
         images = kwargs.pop("images", None)
-        image_sizes = kwargs.pop("image_sizes", None)
+        image_sizes = kwargs.pop("image_sizes", None) # 打包
         inputs = self.language_model.prepare_inputs_for_generation(
             input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
         )
         if images is not None:
             inputs['images'] = images
+        #  如果 inputs 字典里没有 'images' 这个 key，直接写 inputs['images'] = images 会自动创建这个键！
         if image_sizes is not None:
             inputs['image_sizes'] = image_sizes
         return inputs
@@ -290,6 +291,7 @@ class TinyLlavaForConditionalGeneration(TinyLlavaPreTrainedModel): #继承自刚
         cur_image_idx = 0
         for batch_idx, cur_input_ids in enumerate(input_ids): #enumerate加上序号
             num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
+            # 张量 == 数字 → 逐元素比较 → 返回布尔张量，sum()统计true的个数
             if num_images == 0:
                 cur_image_features = image_features[cur_image_idx]
                 cur_input_embeds_1 = self.language_model.get_input_embeddings()(cur_input_ids)
@@ -300,7 +302,13 @@ class TinyLlavaForConditionalGeneration(TinyLlavaPreTrainedModel): #继承自刚
                 continue
 
             image_token_indices = [-1] + torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].tolist() + [cur_input_ids.shape[0]] #-1+各个图像位置的序号+序列总长度
-            # 列表拼接,都是列表才能拼接
+            # 列表拼接,都是列表才能拼接，torch.where(...)——>>( tensor([2, 4]), )
+            # 2D 张量 [batch, seq_len]
+            # (
+            #     tensor([0, 0, 1]),  # 👈 第 0 维：batch 索引
+            #     tensor([2, 5, 3])   # 👈 第 1 维：seq 索引
+            # )
+
             cur_input_ids_noim = []
             cur_labels = labels[batch_idx]
             cur_labels_noim = []
@@ -308,7 +316,8 @@ class TinyLlavaForConditionalGeneration(TinyLlavaPreTrainedModel): #继承自刚
                 cur_input_ids_noim.append(cur_input_ids[image_token_indices[i]+1:image_token_indices[i+1]]) # 里面每个元素是 1D 张量，最后是最后一个图像后到结尾
                 cur_labels_noim.append(cur_labels[image_token_indices[i]+1:image_token_indices[i+1]])
             split_sizes = [x.shape[0] for x in cur_labels_noim] #split_sizes列表中每个元素值代表每一段张量的长度，元素数=张量数
-            cur_input_embeds = self.language_model.get_input_embeddings()(torch.cat(cur_input_ids_noim)) # 接收一个【张量列表】，直接拼成一个大张量！
+            cur_input_embeds = self.language_model.get_input_embeddings()(torch.cat(cur_input_ids_noim)) 
+            # 把多个句子拼在一起 → 一次性编码 → 再拆回去！提速！避免多次调用模型 embedding 层！
             cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
             # torch.split(input,# 要切开的张量 split_size_or_sections,  # 怎么切（每段多长）dim=0  # 在哪个维度切（默认第0维）)
             cur_new_input_embeds = []

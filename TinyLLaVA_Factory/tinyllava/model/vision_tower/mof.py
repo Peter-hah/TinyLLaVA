@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn as nn
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig, Dinov2Model, AutoConfig
+# 因为 SigLIP 的 API 结构 = 和 CLIP 完全一样！！ SigLIP 是 CLIP 的升级版
 
 from . import register_vision_tower
 from .base import VisionTower
@@ -17,7 +18,7 @@ class MoF(nn.Module):
 
         cfg_dinov2 = AutoConfig.from_pretrained(cfg.model_name_or_path2)
         self.dinov2 = Dinov2Model(cfg_dinov2)
-
+        # 先从路径加载 config，再创建模型
 
 #     def enable_input_require_grads(self):
 #         def make_inputs_require_grad(module, input, output):
@@ -53,7 +54,7 @@ class MoF(nn.Module):
 
 
         image_features = image_features_clip, image_features_dinov2
-
+        # 「自动元组打包」变量 = 值1, 值2 ———>> 变量 = (值1, 值2)
         return image_features
 
 
@@ -61,36 +62,33 @@ class MoF(nn.Module):
 
 
 
-@register_vision_tower('mof')      
-class MoFVisionTower(VisionTower):
+@register_vision_tower('mof')      # 注册一个叫 mof 的视觉塔
+class MoFVisionTower(VisionTower): # 继承框架的 VisionTower
     def __init__(self, cfg):
         super().__init__(cfg)
 
-        self._vision_tower = MoF(cfg)
+        self._vision_tower = MoF(cfg)  # 初始化 MoF 模型（CLIP+DINOv2）
 
+        # 图片处理器（CLIP 标准） image_processor不属于神经网络本体 MoF里面已经是处理好的tensor了
         self._image_processor = CLIPImageProcessor.from_pretrained(cfg.model_name_or_path)
-  
 
     def _load_model(self, vision_tower_name, **kwargs):
+        # 拿配置里的路径
         pretrained_vision_tower_path = kwargs.pop('pretrained_vision_tower_path', None)
+
         if pretrained_vision_tower_path is None:
+            # 情况1：分别加载 CLIP + DINOv2 预训练权重
             model_name_or_path_dinov2 = kwargs.pop('model_name_or_path2')
             self._vision_tower.clip = self._vision_tower.clip.from_pretrained(vision_tower_name, **kwargs)
             self._vision_tower.dinov2 = self._vision_tower.dinov2.from_pretrained(model_name_or_path_dinov2, **kwargs)
-            print("Loading vision tower1 from ", vision_tower_name)
-            print("Loading vision tower2 from ", model_name_or_path_dinov2)
-        else: # nn.Module
-            if pretrained_vision_tower_path is not None:
-                vision_tower_weights = torch.load(os.path.join(pretrained_vision_tower_path, 'pytorch_model.bin'), map_location='cpu')
-                def get_w(weights, keyword):
-                    return {k.split(keyword + '.')[1]: v for k, v in weights.items() if keyword in k}
-                self._vision_tower.load_state_dict(vision_tower_weights)
-            print("Loading vision tower from ", pretrained_vision_tower_path)
+        else:
+            # 情况2：加载你自己训练好的 MoF 整体权重
+            vision_tower_weights = torch.load(...)
+            self._vision_tower.load_state_dict(vision_tower_weights)
 
-
-    def forward(self, x, **kwargs):
+    def forward(self, x,** kwargs):
         device = x.data.device
-        self.to(device)
+        self.to(device)  # 把模型搬到图片所在设备 
+        # img_processor不是在这个 forward 里用，而是给框架别的地方用
         return self._vision_tower(x, **kwargs)
-
 
